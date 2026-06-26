@@ -1,10 +1,68 @@
 import Foundation
 import Combine
 import SwiftUI
+import AppKit
 import ApplicationServices
 import CoreGraphics
 
+enum UnlockShortcut: String, CaseIterable, Identifiable {
+    case controlOptionCommandL = "controlOptionCommandL"
+    case controlOptionCommandK = "controlOptionCommandK"
+    case controlOptionCommandSpace = "controlOptionCommandSpace"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .controlOptionCommandL:
+            return "Control + Option + Command + L"
+        case .controlOptionCommandK:
+            return "Control + Option + Command + K"
+        case .controlOptionCommandSpace:
+            return "Control + Option + Command + Espacio"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .controlOptionCommandL:
+            return "⌃⌥⌘L"
+        case .controlOptionCommandK:
+            return "⌃⌥⌘K"
+        case .controlOptionCommandSpace:
+            return "⌃⌥⌘Space"
+        }
+    }
+
+    var keyCode: Int64 {
+        switch self {
+        case .controlOptionCommandL:
+            return 37
+        case .controlOptionCommandK:
+            return 40
+        case .controlOptionCommandSpace:
+            return 49
+        }
+    }
+
+    func matches(type: CGEventType, event: CGEvent) -> Bool {
+        guard type == .keyDown else { return false }
+
+        let pressedKeyCode = event.getIntegerValueField(.keyboardEventKeycode)
+        let flags = event.flags
+
+        let hasRequiredModifiers =
+            flags.contains(.maskControl) &&
+            flags.contains(.maskAlternate) &&
+            flags.contains(.maskCommand)
+
+        return pressedKeyCode == keyCode && hasRequiredModifiers
+    }
+}
+
 final class KeyboardLockManager: ObservableObject {
+    static let shared = KeyboardLockManager()
+
     @Published var isLocked: Bool = false
     @Published var hasAccessibilityPermission: Bool = false
     @Published var remainingSeconds: Int = 300
@@ -14,9 +72,20 @@ final class KeyboardLockManager: ObservableObject {
     private var runLoopSource: CFRunLoopSource?
     private var timer: Timer?
 
-    private static let unlockKeyCode: Int64 = 37 // L
+    private let maxDuration = 900
+    private let minDuration = 30
 
-    init() {
+    private init() {
+        UserDefaults.standard.register(defaults: [
+            "defaultDuration": 300,
+            "customDuration": 300,
+            "unlockShortcut": UnlockShortcut.controlOptionCommandL.rawValue,
+            "showCleaningOverlay": true,
+            "dimScreenDuringCleaning": true,
+            "blockPointerClicks": false,
+            "playLockSounds": true
+        ])
+
         refreshPermissionStatus()
     }
 
@@ -36,7 +105,13 @@ final class KeyboardLockManager: ObservableObject {
         }
     }
 
-    func startLock(duration: Int = 300) {
+    func openAccessibilitySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func startLock(duration: Int? = nil) {
         refreshPermissionStatus()
 
         guard hasAccessibilityPermission else {
@@ -46,8 +121,11 @@ final class KeyboardLockManager: ObservableObject {
 
         guard !isLocked else { return }
 
-        remainingSeconds = duration
-        statusMessage = "Teclado bloqueado. Usa ⌃⌥⌘L para desbloquear."
+        let preferredDuration = duration ?? UserDefaults.standard.integer(forKey: "defaultDuration")
+        let safeDuration = min(max(preferredDuration, minDuration), maxDuration)
+
+        remainingSeconds = safeDuration
+        statusMessage = "Teclado bloqueado. Usa \(currentShortcut.shortTitle) para desbloquear."
 
         let eventMask =
             CGEventMask(1 << CGEventType.keyDown.rawValue) |
@@ -63,7 +141,14 @@ final class KeyboardLockManager: ObservableObject {
                 .fromOpaque(refcon)
                 .takeUnretainedValue()
 
-            if manager.isUnlockShortcut(type: type, event: event) {
+            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                if let eventTap = manager.eventTap {
+                    CGEvent.tapEnable(tap: eventTap, enable: true)
+                }
+                return Unmanaged.passUnretained(event)
+            }
+
+            if manager.currentShortcut.matches(type: type, event: event) {
                 DispatchQueue.main.async {
                     manager.stopLock(message: "Teclado desbloqueado.")
                 }
@@ -99,6 +184,15 @@ final class KeyboardLockManager: ObservableObject {
         CGEvent.tapEnable(tap: tap, enable: true)
 
         isLocked = true
+
+        if UserDefaults.standard.bool(forKey: "playLockSounds") {
+            NSSound.beep()
+        }
+
+        if UserDefaults.standard.bool(forKey: "showCleaningOverlay") {
+            CleaningOverlayWindowManager.shared.show(manager: self)
+        }
+
         startTimer()
     }
 
@@ -117,8 +211,19 @@ final class KeyboardLockManager: ObservableObject {
 
         eventTap = nil
         runLoopSource = nil
+
+        CleaningOverlayWindowManager.shared.hide()
+
         isLocked = false
         statusMessage = message
+
+        if UserDefaults.standard.bool(forKey: "playLockSounds") {
+            NSSound.beep()
+        }
+    }
+
+    func updateOverlayPointerBehavior() {
+        CleaningOverlayWindowManager.shared.updatePointerBehavior()
     }
 
     private func startTimer() {
@@ -137,17 +242,17 @@ final class KeyboardLockManager: ObservableObject {
         }
     }
 
-    private func isUnlockShortcut(type: CGEventType, event: CGEvent) -> Bool {
-        guard type == .keyDown else { return false }
+    var currentShortcut: UnlockShortcut {
+        let rawValue = UserDefaults.standard.string(forKey: "unlockShortcut")
+            ?? UnlockShortcut.controlOptionCommandL.rawValue
 
-        let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-        let flags = event.flags
+        return UnlockShortcut(rawValue: rawValue) ?? .controlOptionCommandL
+    }
 
-        let hasRequiredModifiers =
-            flags.contains(.maskControl) &&
-            flags.contains(.maskAlternate) &&
-            flags.contains(.maskCommand)
-
-        return keyCode == Self.unlockKeyCode && hasRequiredModifiers
+    func formattedRemainingTime() -> String {
+        let safeSeconds = max(remainingSeconds, 0)
+        let minutes = safeSeconds / 60
+        let seconds = safeSeconds % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 }

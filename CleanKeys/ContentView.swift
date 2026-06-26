@@ -1,7 +1,14 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var keyboard = KeyboardLockManager()
+    @EnvironmentObject private var keyboard: KeyboardLockManager
+
+    @AppStorage("defaultDuration") private var defaultDuration: Int = 300
+    @AppStorage("customDuration") private var customDuration: Int = 300
+    @AppStorage("showCleaningOverlay") private var showCleaningOverlay: Bool = true
+    @AppStorage("dimScreenDuringCleaning") private var dimScreenDuringCleaning: Bool = true
+    @AppStorage("blockPointerClicks") private var blockPointerClicks: Bool = false
+
     @State private var selectedDuration: Int = 300
 
     var body: some View {
@@ -19,12 +26,12 @@ struct ContentView: View {
                         .font(.system(size: 15, weight: .medium, design: .rounded))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
-                        .frame(maxWidth: 380)
+                        .frame(maxWidth: 430)
                 }
 
                 if keyboard.isLocked {
-                    Text(formatTime(keyboard.remainingSeconds))
-                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                    Text(keyboard.formattedRemainingTime())
+                        .font(.system(size: 42, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .padding(.top, 2)
                 } else {
@@ -43,13 +50,14 @@ struct ContentView: View {
                             keyboard.isLocked ? "Desbloquear" : "Bloquear teclado",
                             systemImage: keyboard.isLocked ? "lock.open.fill" : "lock.fill"
                         )
-                        .frame(width: 170)
+                        .frame(width: 180)
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
 
                     Button {
                         keyboard.requestAccessibilityPermission()
+                        keyboard.openAccessibilitySettings()
                     } label: {
                         Label("Permisos", systemImage: "hand.raised.fill")
                     }
@@ -57,18 +65,24 @@ struct ContentView: View {
                     .controlSize(.large)
                 }
 
-                Text("Atajo de desbloqueo: Control + Option + Command + L")
+                quickSettings
+
+                Text("Atajo de desbloqueo: \(keyboard.currentShortcut.title)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .padding(.top, 4)
+                    .padding(.top, 2)
             }
             .padding(36)
-            .frame(width: 520, height: 430)
+            .frame(width: 560, height: 520)
             .glassCard()
         }
-        .frame(width: 680, height: 520)
+        .frame(width: 720, height: 620)
         .onAppear {
             keyboard.refreshPermissionStatus()
+            selectedDuration = defaultDuration
+        }
+        .onChange(of: blockPointerClicks) {
+            keyboard.updateOverlayPointerBehavior()
         }
     }
 
@@ -90,7 +104,9 @@ struct ContentView: View {
 
     private var durationSelector: some View {
         HStack(spacing: 10) {
+            durationButton(title: "30 s", seconds: 30)
             durationButton(title: "1 min", seconds: 60)
+            durationButton(title: "3 min", seconds: 180)
             durationButton(title: "5 min", seconds: 300)
             durationButton(title: "10 min", seconds: 600)
         }
@@ -99,14 +115,27 @@ struct ContentView: View {
     private func durationButton(title: String, seconds: Int) -> some View {
         Button {
             selectedDuration = seconds
+            defaultDuration = seconds
         } label: {
             Text(title)
                 .font(.system(size: 14, weight: .semibold, design: .rounded))
-                .frame(width: 68)
+                .frame(width: 62)
         }
         .buttonStyle(.bordered)
         .controlSize(.regular)
         .opacity(selectedDuration == seconds ? 1.0 : 0.55)
+    }
+
+    private var quickSettings: some View {
+        VStack(spacing: 10) {
+            Toggle("Mostrar pantalla de limpieza", isOn: $showCleaningOverlay)
+            Toggle("Atenuar pantalla durante limpieza", isOn: $dimScreenDuringCleaning)
+            Toggle("Bloquear clicks del mouse/trackpad", isOn: $blockPointerClicks)
+        }
+        .toggleStyle(.switch)
+        .font(.system(size: 13, weight: .medium, design: .rounded))
+        .frame(maxWidth: 350)
+        .padding(.top, 4)
     }
 
     private var backgroundView: some View {
@@ -125,27 +154,21 @@ struct ContentView: View {
                 .fill(.blue.opacity(0.24))
                 .frame(width: 280, height: 280)
                 .blur(radius: 70)
-                .offset(x: -210, y: -150)
+                .offset(x: -230, y: -170)
 
             Circle()
                 .fill(.purple.opacity(0.20))
-                .frame(width: 300, height: 300)
+                .frame(width: 320, height: 320)
                 .blur(radius: 80)
-                .offset(x: 220, y: 160)
+                .offset(x: 240, y: 190)
 
             Circle()
                 .fill(.cyan.opacity(0.12))
-                .frame(width: 180, height: 180)
+                .frame(width: 190, height: 190)
                 .blur(radius: 55)
-                .offset(x: 40, y: -210)
+                .offset(x: 60, y: -250)
         }
         .ignoresSafeArea()
-    }
-
-    private func formatTime(_ seconds: Int) -> String {
-        let minutes = max(seconds, 0) / 60
-        let secs = max(seconds, 0) % 60
-        return String(format: "%02d:%02d", minutes, secs)
     }
 }
 
@@ -163,4 +186,5 @@ private extension View {
 
 #Preview {
     ContentView()
+        .environmentObject(KeyboardLockManager.shared)
 }
